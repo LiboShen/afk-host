@@ -419,8 +419,14 @@ class WindowManager: NSObject, FlutterPlugin {
     }
 
     private func activateUsingAppleScript(appName: String) -> Bool {
+        // Sanitize app name to prevent AppleScript injection:
+        // escape backslashes first, then double quotes
+        let sanitized = appName
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
         let script = """
-        tell application "\(appName)"
+        tell application "\(sanitized)"
             activate
         end tell
         """

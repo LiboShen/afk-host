@@ -5,6 +5,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -18,12 +19,12 @@ class DeviceStorage {
   DeviceStorage._();
 
   SharedPreferences? _prefs;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   String? _deviceId;
   Uint8List? _privateKey;
 
-  // Keys for SharedPreferences
+  // Keys for SharedPreferences (non-sensitive data)
   static const _deviceIdKey = 'device_id';
-  static const _privateKeyKey = 'private_key';
   static const _publicKeyKey = 'public_key';
   static const _serverUrlKey = 'server_url';
   static const _pairedClientsKey = 'paired_clients';
@@ -32,11 +33,45 @@ class DeviceStorage {
   static const _lastConnectedClientKey = 'last_connected_client';
   static const _lastConnectedAtKey = 'last_connected_at'; // ISO-8601 timestamp
 
+  // Keys for secure storage (sensitive data — stored in macOS Keychain)
+  static const _securePrivateKeyKey = 'ed25519_private_key';
+
+  // Legacy key for migration from SharedPreferences
+  static const _legacyPrivateKeyKey = 'private_key';
+
   // Default server URL
   static const _defaultServerUrl = 'https://connect.afkdev.app';
 
   Future<void> initialize() async {
     _prefs = await SharedPreferences.getInstance();
+    await _migratePrivateKeyToSecureStorage();
+  }
+
+  /// Migrate private key from SharedPreferences (plaintext) to secure storage (Keychain).
+  /// Runs once — removes the legacy key after successful migration.
+  /// If secure storage fails (e.g. Keychain unavailable), keeps using SharedPreferences.
+  Future<void> _migratePrivateKeyToSecureStorage() async {
+    final legacyKey = _prefs?.getString(_legacyPrivateKeyKey);
+    if (legacyKey == null) return;
+
+    try {
+      // Check if already migrated
+      final existing = await _secureStorage.read(key: _securePrivateKeyKey);
+      if (existing != null) {
+        // Already in secure storage — just remove the legacy copy
+        await _prefs?.remove(_legacyPrivateKeyKey);
+        hlog('Removed legacy private key from SharedPreferences', source: 'Storage');
+        return;
+      }
+
+      // Migrate to secure storage
+      await _secureStorage.write(key: _securePrivateKeyKey, value: legacyKey);
+      await _prefs?.remove(_legacyPrivateKeyKey);
+      hlog('Migrated private key to secure storage (Keychain)', source: 'Storage');
+    } catch (e) {
+      // Keychain access failed — keep using SharedPreferences as fallback
+      hlog('Secure storage migration failed ($e), keeping legacy storage', source: 'Storage');
+    }
   }
 
   /// Get or create a unique device ID
@@ -53,22 +88,43 @@ class DeviceStorage {
     return _deviceId!;
   }
 
-  Uint8List? getPrivateKey() {
+  /// Get private key. Tries secure storage (Keychain) first, falls back to SharedPreferences.
+  Future<Uint8List?> getPrivateKey() async {
     if (_privateKey != null) return _privateKey;
 
-    final stored = _prefs?.getString(_privateKeyKey);
-    if (stored != null) {
-      _privateKey = base64Decode(stored);
+    // Try secure storage first
+    try {
+      final stored = await _secureStorage.read(key: _securePrivateKeyKey);
+      if (stored != null) {
+        _privateKey = base64Decode(stored);
+        return _privateKey;
+      }
+    } catch (e) {
+      hlog('Secure storage read failed ($e), trying legacy storage', source: 'Storage');
+    }
+
+    // Fallback to SharedPreferences (legacy or if Keychain fails)
+    final legacyStored = _prefs?.getString(_legacyPrivateKeyKey);
+    if (legacyStored != null) {
+      _privateKey = base64Decode(legacyStored);
     }
     return _privateKey;
   }
 
-  /// Store a new keypair (used when CryptoService generates keys)
+  /// Store a new keypair. Tries secure storage (Keychain) first, falls back to SharedPreferences.
   Future<void> storeKeyPair(Uint8List privateKey, String publicKeyBase64) async {
     _privateKey = privateKey;
-    await _prefs?.setString(_privateKeyKey, base64Encode(privateKey));
+    final encoded = base64Encode(privateKey);
+
+    try {
+      await _secureStorage.write(key: _securePrivateKeyKey, value: encoded);
+      hlog('Stored new keypair (private key in secure storage)', source: 'Storage');
+    } catch (e) {
+      // Fallback to SharedPreferences if Keychain fails
+      await _prefs?.setString(_legacyPrivateKeyKey, encoded);
+      hlog('Secure storage write failed ($e), stored in SharedPreferences', source: 'Storage');
+    }
     await _prefs?.setString(_publicKeyKey, publicKeyBase64);
-    hlog('Stored new keypair', source: 'Storage');
   }
 
   /// Get server URL

@@ -18,6 +18,18 @@ Migrated from native Swift to Flutter for cross-platform support. Feature parity
 - Session state machine getting stuck on reconnect
 - Crash from concurrent screen capture calls
 
+## [1.6.0] - 2026-03-23
+
+### Security
+- **[CRITICAL] Enforce signature verification** - Messages with invalid Ed25519 signatures are now rejected instead of being processed (was bypassed in PoC mode)
+- **[CRITICAL] Paired-device authorization** - Only messages from known paired clients (verified by public key) are accepted; unknown devices are rejected before any processing
+- **[CRITICAL] Device ID cross-check** - The `from` field in messages is verified against the paired client record matching the signing public key, preventing device ID spoofing
+- **[HIGH] AppleScript injection fix** - App names are now sanitized (backslashes, double quotes escaped) before AppleScript interpolation in window activation fallback
+- **[HIGH] Private key moved to macOS Keychain** - Ed25519 private key is now stored via `flutter_secure_storage` (macOS Keychain) instead of plaintext `SharedPreferences`. Automatic one-time migration from legacy storage
+- **[HIGH] Input injection rate limiting** - Added 120 events/second rate limit on data channel input to prevent abuse
+- **[HIGH] Paste text length limit** - `voice_input` and `clipboard_paste` payloads are capped at 4096 characters
+- **[MEDIUM] CLI socket authentication** - Unix domain socket now requires a randomly generated auth token (written to a chmod 600 token file) on every message
+
 ## [1.3.3] - 2026-01-28
 
 ### Fixed

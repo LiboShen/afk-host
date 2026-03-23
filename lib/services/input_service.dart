@@ -23,9 +23,32 @@ class InputService {
   // Callback for sending data channel messages back to client
   void Function(Map<String, dynamic>)? sendDataChannelMessage;
 
+  // Rate limiting: max events per second
+  static const _maxEventsPerSecond = 120;
+  final List<DateTime> _eventTimestamps = [];
+
+  // Max paste text length to prevent abuse
+  static const _maxPasteLength = 4096;
+
+  /// Check rate limit. Returns true if the event should be allowed.
+  bool _checkRateLimit() {
+    final now = DateTime.now();
+    final cutoff = now.subtract(const Duration(seconds: 1));
+    _eventTimestamps.removeWhere((t) => t.isBefore(cutoff));
+
+    if (_eventTimestamps.length >= _maxEventsPerSecond) {
+      hlog('Rate limit exceeded ($_maxEventsPerSecond events/s)', source: 'Input');
+      return false;
+    }
+    _eventTimestamps.add(now);
+    return true;
+  }
+
   /// Process incoming data channel message containing input events.
   /// Returns true if the message was handled.
   Future<bool> processDataChannelMessage(String message) async {
+    if (!_checkRateLimit()) return false;
+
     try {
       final json = jsonDecode(message) as Map<String, dynamic>;
       final type = json['type'] as String?;
@@ -101,10 +124,12 @@ class InputService {
 
       case 'voice_input':
         final text = data['text'] as String?;
-        // Note: action field is parsed but currently only 'paste_text' is supported
-        // final action = data['action'] as String? ?? 'paste_text';
         if (text == null || text.isEmpty) {
           hlog('Invalid voice_input data format', source: 'Input');
+          return false;
+        }
+        if (text.length > _maxPasteLength) {
+          hlog('voice_input text too long (${text.length} > $_maxPasteLength)', source: 'Input');
           return false;
         }
         return await pasteText(text);
@@ -113,6 +138,10 @@ class InputService {
         final text = data['text'] as String?;
         if (text == null || text.isEmpty) {
           hlog('Invalid clipboard_paste data format', source: 'Input');
+          return false;
+        }
+        if (text.length > _maxPasteLength) {
+          hlog('clipboard_paste text too long (${text.length} > $_maxPasteLength)', source: 'Input');
           return false;
         }
         return await pasteText(text);
