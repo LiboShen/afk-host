@@ -48,7 +48,7 @@ class RemoteSessionManager extends ChangeNotifier
     await DeviceStorage.shared.initialize();
 
     // Initialize crypto
-    final storedPrivateKey = DeviceStorage.shared.getPrivateKey();
+    final storedPrivateKey = await DeviceStorage.shared.getPrivateKey();
     if (storedPrivateKey != null) {
       await CryptoService.shared.initialize(seed: storedPrivateKey);
     } else {

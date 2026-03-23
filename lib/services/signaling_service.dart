@@ -313,8 +313,19 @@ class SignalingService {
       return;
     }
 
-    // Verify signature (for now, accept all - proper verification needs paired client lookup)
-    // In production, look up client by public key and verify
+    // Verify the sender is a known paired client by public key
+    final pairedClient = DeviceStorage.shared.getPairedClient(
+      byPublicKey: publicKey,
+    );
+    if (pairedClient == null) {
+      hlog(
+        'Rejecting message from unknown/unpaired public key',
+        source: 'Signaling',
+      );
+      return;
+    }
+
+    // Verify Ed25519 signature
     final isValid = await CryptoService.shared.verifyPayload(
       payloadString,
       signature,
@@ -322,11 +333,11 @@ class SignalingService {
     );
 
     if (!isValid) {
-      // For PoC, we'll still process the message but log the verification failure
       hlog(
-        'Signature verification failed (continuing for PoC)',
+        'Signature verification failed — rejecting message',
         source: 'Signaling',
       );
+      return;
     }
 
     Map<String, dynamic>? payload;
@@ -340,6 +351,15 @@ class SignalingService {
     final type = payload['type'] as String?;
     final fromDevice = payload['from'] as String?;
     final data = payload['data'] as Map<String, dynamic>? ?? {};
+
+    // Additional check: verify fromDeviceId matches the paired client
+    if (fromDevice != null && fromDevice != pairedClient.deviceId) {
+      hlog(
+        'Device ID mismatch: message from $fromDevice but key belongs to ${pairedClient.deviceId}',
+        source: 'Signaling',
+      );
+      return;
+    }
 
     switch (type) {
       case 'connect':
