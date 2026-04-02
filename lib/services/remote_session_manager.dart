@@ -33,8 +33,6 @@ class RemoteSessionManager extends ChangeNotifier
   int _sessionGeneration = 0;
   DateTime? _sessionStartTime;
 
-  static const Duration _notificationRecencyWindow = Duration(minutes: 30);
-
   String? get connectedClientId => _connectedClientId;
   bool get isStreaming => _connectedClientId != null && !_isSettingUpWebRTC;
 
@@ -108,17 +106,6 @@ class RemoteSessionManager extends ChangeNotifier
     if (apnsToken == null) {
       hlog(
         'No APNs token available, cannot send push notification',
-        source: 'RemoteSession',
-      );
-      return;
-    }
-
-    final lastConnectedAt = DeviceStorage.shared.lastConnectedAt;
-    if (lastConnectedAt == null ||
-        DateTime.now().toUtc().difference(lastConnectedAt) >
-            _notificationRecencyWindow) {
-      hlog(
-        'Skipping push notification: last client activity is older than 30 minutes',
         source: 'RemoteSession',
       );
       return;
