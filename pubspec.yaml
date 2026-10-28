@@ -37,7 +37,7 @@ dependencies:
   
   # Auto-update support for macOS and Windows (based on Sparkle/WinSparkle)
   auto_updater: ^1.0.0
-  flutter_webrtc: ^1.3.0
+  flutter_webrtc: ^1.4.1
   web_socket_channel: ^3.0.3
   crypto: ^3.0.7
   cryptography: ^2.9.0

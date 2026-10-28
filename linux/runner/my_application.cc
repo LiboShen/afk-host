@@ -22,6 +22,13 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+
+  // On Wayland, libwebrtc prefers X11 capture via DISPLAY over PipeWire,
+  // producing black frames. Unset DISPLAY so libwebrtc falls back to PipeWire.
+  if (g_getenv("WAYLAND_DISPLAY") != nullptr) {
+    g_unsetenv("DISPLAY");
+  }
+
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 

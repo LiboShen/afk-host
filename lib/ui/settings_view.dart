@@ -4,6 +4,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -567,6 +568,7 @@ class _CliSectionState extends State<_CliSection> {
   String? _command; // Command to show user for manual installation
 
   static const _channel = MethodChannel('app.afkdev.app_host');
+  static const _cliTarget = '/usr/local/bin/afk';
 
   @override
   void initState() {
@@ -574,13 +576,44 @@ class _CliSectionState extends State<_CliSection> {
     _refreshStatus();
   }
 
+  // On Linux, find the CLI script bundled alongside the executable.
+  // In a release bundle: <bundle>/cli/afk
+  // In dev (flutter run): <project>/cli/afk
+  String? _findLinuxCliSource() {
+    final execDir = File(Platform.resolvedExecutable).parent;
+    final candidates = [
+      '${execDir.path}/cli/afk',
+      '${execDir.parent.path}/cli/afk',
+    ];
+    for (final p in candidates) {
+      if (File(p).existsSync()) return p;
+    }
+    return null;
+  }
+
+  bool _isCliInstalledLinux() {
+    final link = File(_cliTarget);
+    return link.existsSync();
+  }
+
   Future<void> _refreshStatus() async {
+    if (Platform.isLinux) {
+      if (mounted) {
+        setState(() {
+          _isInstalled = _isCliInstalledLinux();
+          if (_isInstalled) {
+            _error = null;
+            _command = null;
+          }
+        });
+      }
+      return;
+    }
     try {
       final result = await _channel.invokeMethod<bool>('isCliInstalled');
       if (mounted) {
         setState(() {
           _isInstalled = result ?? false;
-          // Clear error state when status is refreshed and CLI is now installed
           if (_isInstalled) {
             _error = null;
             _command = null;
@@ -591,41 +624,50 @@ class _CliSectionState extends State<_CliSection> {
   }
 
   Future<void> _install() async {
-    try {
-      // First check if already installed (e.g., user ran manual command)
-      final alreadyInstalled = await _channel.invokeMethod<bool>('isCliInstalled') ?? false;
-      if (alreadyInstalled) {
-        if (mounted) {
-          setState(() {
-            _isInstalled = true;
-            _error = null;
-            _command = null;
-          });
-        }
+    if (Platform.isLinux) {
+      if (_isCliInstalledLinux()) {
+        if (mounted) setState(() { _isInstalled = true; _error = null; _command = null; });
         return;
       }
+      final source = _findLinuxCliSource();
+      if (source == null) {
+        if (mounted) setState(() => _error = 'CLI not found in app bundle.');
+        return;
+      }
+      try {
+        await Link(_cliTarget).create(source);
+        if (mounted) setState(() { _isInstalled = true; _error = null; _command = null; });
+      } on FileSystemException {
+        // Likely permission denied — show manual command
+        if (mounted) {
+          setState(() {
+            _error = 'Permission denied. Run this command in Terminal:';
+            _command = 'sudo ln -sf $source $_cliTarget';
+          });
+        }
+      }
+      return;
+    }
 
+    try {
+      final alreadyInstalled = await _channel.invokeMethod<bool>('isCliInstalled') ?? false;
+      if (alreadyInstalled) {
+        if (mounted) setState(() { _isInstalled = true; _error = null; _command = null; });
+        return;
+      }
       final dynamic rawResult = await _channel.invokeMethod('installCLI');
       if (!mounted) return;
-
       final result = rawResult as Map<Object?, Object?>?;
       final success = result?['success'] as bool? ?? false;
       if (success) {
-        setState(() {
-          _isInstalled = true;
-          _error = null;
-          _command = null;
-        });
+        setState(() { _isInstalled = true; _error = null; _command = null; });
       } else {
         final errorType = result?['errorType'] as String?;
-        final error = result?['error'] as String?;
-        final command = result?['command'] as String?;
-
         setState(() {
           _error = errorType == 'permission'
               ? 'Permission denied. Run this command in Terminal:'
-              : error ?? 'Installation failed';
-          _command = command;
+              : result?['error'] as String? ?? 'Installation failed';
+          _command = result?['command'] as String?;
         });
       }
     } catch (e) {
@@ -634,28 +676,35 @@ class _CliSectionState extends State<_CliSection> {
   }
 
   Future<void> _uninstall() async {
+    if (Platform.isLinux) {
+      try {
+        await File(_cliTarget).delete();
+        if (mounted) setState(() { _isInstalled = false; _error = null; _command = null; });
+      } on FileSystemException {
+        if (mounted) {
+          setState(() {
+            _error = 'Permission denied. Run this command in Terminal:';
+            _command = 'sudo rm $_cliTarget';
+          });
+        }
+      }
+      return;
+    }
+
     try {
       final dynamic rawResult = await _channel.invokeMethod('uninstallCLI');
       if (!mounted) return;
-
       final result = rawResult as Map<Object?, Object?>?;
       final success = result?['success'] as bool? ?? false;
       if (success) {
-        setState(() {
-          _isInstalled = false;
-          _error = null;
-          _command = null;
-        });
+        setState(() { _isInstalled = false; _error = null; _command = null; });
       } else {
         final errorType = result?['errorType'] as String?;
-        final error = result?['error'] as String?;
-        final command = result?['command'] as String?;
-
         setState(() {
           _error = errorType == 'permission'
               ? 'Permission denied. Run this command in Terminal:'
-              : error ?? 'Uninstall failed';
-          _command = command;
+              : result?['error'] as String? ?? 'Uninstall failed';
+          _command = result?['command'] as String?;
         });
       }
     } catch (e) {

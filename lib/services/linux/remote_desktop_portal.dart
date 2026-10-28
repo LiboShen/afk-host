@@ -43,9 +43,9 @@ class RemoteDesktopPortal {
   // Session handle (D-Bus object path)
   DBusObjectPath? _sessionHandle;
 
-  // Stream node ID from ScreenCast (needed for absolute positioning)
+  // Stream node ID from ScreenCast portal Start response
   int? _streamNodeId;
-  
+
   // Whether we have a valid stream for absolute positioning
   bool get hasStream => _streamNodeId != null;
 
@@ -512,72 +512,34 @@ class RemoteDesktopPortal {
     hlog('Screen size set to: ${size.width}x${size.height}', source: 'Portal');
   }
 
-  /// Convert normalized coordinates (0-1) to screen coordinates
-  (double, double) _normalizedToScreen(double x, double y) {
-    final width = _screenSize?.width ?? 1920;
-    final height = _screenSize?.height ?? 1080;
-    return (x * width, y * height);
-  }
-
-  // Track last position for relative motion fallback
-  double _lastX = 0.5;
-  double _lastY = 0.5;
-
-  /// Move pointer to absolute position (normalized 0-1 coordinates)
+  /// Move pointer to normalized position (0-1 coordinates).
+  /// Uses NotifyPointerMotionAbsolute with the portal stream node.
   Future<bool> notifyPointerMotionAbsolute(double x, double y) async {
-    if (_state != PortalSessionState.active || _sessionHandle == null) {
+    if (_state != PortalSessionState.active ||
+        _sessionHandle == null ||
+        _streamNodeId == null) {
       return false;
     }
 
-    // If we have a stream, use absolute positioning
-    if (_streamNodeId != null) {
-      try {
-        final (screenX, screenY) = _normalizedToScreen(x, y);
+    final w = _screenSize?.width ?? 1920;
+    final h = _screenSize?.height ?? 1080;
 
-        await _portal!.callMethod(
-          'org.freedesktop.portal.RemoteDesktop',
-          'NotifyPointerMotionAbsolute',
-          [
-            _sessionHandle!,
-            DBusDict.stringVariant({}), // options
-            DBusUint32(_streamNodeId!),
-            DBusDouble(screenX),
-            DBusDouble(screenY),
-          ],
-          replySignature: DBusSignature(''),
-        );
-        
-        _lastX = x;
-        _lastY = y;
-        return true;
-      } catch (e) {
-        hlog('NotifyPointerMotionAbsolute failed: $e, falling back to relative', source: 'Portal');
-        // Fall through to relative motion
-      }
-    }
-
-    // Fallback: Use relative motion
     try {
-      final dx = (x - _lastX) * (_screenSize?.width ?? 1920);
-      final dy = (y - _lastY) * (_screenSize?.height ?? 1080);
-      
-      _lastX = x;
-      _lastY = y;
-
       await _portal!.callMethod(
         'org.freedesktop.portal.RemoteDesktop',
-        'NotifyPointerMotion',
+        'NotifyPointerMotionAbsolute',
         [
           _sessionHandle!,
-          DBusDict.stringVariant({}), // options
-          DBusDouble(dx),
-          DBusDouble(dy),
+          DBusDict.stringVariant({}),
+          DBusUint32(_streamNodeId!),
+          DBusDouble(x * w),
+          DBusDouble(y * h),
         ],
         replySignature: DBusSignature(''),
       );
       return true;
     } catch (e) {
-      hlog('NotifyPointerMotion failed: $e', source: 'Portal');
+      hlog('NotifyPointerMotionAbsolute failed: $e', source: 'Portal');
       return false;
     }
   }
@@ -694,8 +656,31 @@ class RemoteDesktopPortal {
   Future<void> stopSession() async {
     hlog('Stopping RemoteDesktop session...', source: 'Portal');
 
+    // Explicitly close the D-Bus session so KDE removes its screen-sharing
+    // indicator immediately rather than waiting for connection drop detection.
+    if (_sessionHandle != null && _client != null) {
+      try {
+        final sessionObj = DBusRemoteObject(
+          _client!,
+          name: 'org.freedesktop.portal.Desktop',
+          path: _sessionHandle!,
+        );
+        await sessionObj.callMethod(
+          'org.freedesktop.portal.Session',
+          'Close',
+          [],
+          replySignature: DBusSignature(''),
+        );
+        hlog('Session closed on portal', source: 'Portal');
+      } catch (e) {
+        hlog('Session close error (ignored): $e', source: 'Portal');
+      }
+    }
+
     _sessionHandle = null;
     _state = PortalSessionState.disconnected;
+    _streamNodeId = null;
+    _screenSize = null;
 
     hlog('Session stopped', source: 'Portal');
   }

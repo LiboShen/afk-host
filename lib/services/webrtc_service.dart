@@ -3,9 +3,11 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'device_storage.dart';
+import 'linux/linux_input_handler.dart';
 import 'log_service.dart';
 
 /// Delegate for WebRTC events
@@ -117,117 +119,84 @@ class WebRTCService {
     }
     _isCapturingScreen = true;
 
+    // Log platform and session information for diagnostics
+    if (Platform.isLinux) {
+      final sessionType = Platform.environment['XDG_SESSION_TYPE'] ?? 'unknown';
+      final desktop = Platform.environment['XDG_CURRENT_DESKTOP'] ?? 'unknown';
+      hlog('Linux capture attempt: session=$sessionType, desktop=$desktop', source: 'WebRTC');
+
+      // Start the portal session so NotifyPointerMotionAbsolute has a stream node.
+      await LinuxInputHandler.shared.initialize();
+    }
+
     try {
       // Get available screen sources
+      hlog('Calling desktopCapturer.getSources()...', source: 'WebRTC');
       final sources = await desktopCapturer.getSources(
         types: [SourceType.Screen],
       );
+      hlog('desktopCapturer.getSources() returned ${sources.length} source(s)', source: 'WebRTC');
 
       if (sources.isEmpty) {
         hlog('No screen sources available', source: 'WebRTC');
         return false;
       }
 
+      // Log all available sources
+      for (var i = 0; i < sources.length; i++) {
+        final s = sources[i];
+        hlog('  Source $i: name="${s.name}", id="${s.id}"', source: 'WebRTC');
+      }
+
       // Use the first (main) screen
       final source = sources.first;
       _streamingSourceId = source.id;
-      hlog('Capturing screen: ${source.name} (id: ${source.id})', source: 'WebRTC');
+      hlog('Selected screen: ${source.name} (id: ${source.id})', source: 'WebRTC');
 
       // Start screen capture with constraints
+      hlog('Calling getDisplayMedia() with sourceId=${source.id}...', source: 'WebRTC');
       _localStream = await navigator.mediaDevices.getDisplayMedia({
         'video': {
           'deviceId': {'exact': source.id},
-          'mandatory': {
-            'minWidth': 1920,
-            'minHeight': 1080,
-            'frameRate': 30.0,
-          },
+          'frameRate': {'ideal': 30, 'max': 30},
         },
         'audio': false,
       });
+      hlog('getDisplayMedia() succeeded, stream acquired', source: 'WebRTC');
 
       // Add video track to peer connection
       final videoTracks = _localStream!.getVideoTracks();
+      hlog('Stream has ${videoTracks.length} video track(s)', source: 'WebRTC');
+
       if (videoTracks.isEmpty) {
         hlog('No video tracks in captured stream', source: 'WebRTC');
         return false;
       }
 
       final videoTrack = videoTracks.first;
+      hlog('Video track: id=${videoTrack.id}, label="${videoTrack.label}", enabled=${videoTrack.enabled}', source: 'WebRTC');
 
       // Ensure the track is enabled
       videoTrack.enabled = true;
 
       // Add track to peer connection (creates transceiver implicitly)
       final sender = await _peerConnection!.addTrack(videoTrack, _localStream!);
-
-      // Configure encoding parameters based on user's stream quality setting
-      try {
-        final parameters = sender.parameters;
-        if (parameters.encodings != null && parameters.encodings!.isNotEmpty) {
-          final scaleFactor = DeviceStorage.shared.getStreamQuality();
-          parameters.encodings![0].maxBitrate = 8000000; // 8 Mbps
-          parameters.encodings![0].scaleResolutionDownBy = scaleFactor;
-          await sender.setParameters(parameters);
-          hlog('Encoding: scaleResolutionDownBy=$scaleFactor', source: 'WebRTC');
-        }
-      } catch (e) {
-        hlog('Failed to set encoding parameters: $e', source: 'WebRTC');
-      }
-
-      // Verify transceiver was created
-      final transceivers = await _peerConnection!.getTransceivers();
-
-      for (final transceiver in transceivers) {
-        if (transceiver.sender.track?.kind == 'video') {
-          try {
-            final capabilities = await getRtpSenderCapabilities('video');
-
-            
-            List<RTCRtpCodecCapability> prioritizedCodecs = [];
-            List<RTCRtpCodecCapability> otherCodecs = [];
-            
-            final codecs = capabilities.codecs ?? [];
-            
-            // 1. Find VP9 (Preferred by Swift Host/iOS Client)
-            for (var c in codecs) {
-              if (c.mimeType.toLowerCase().contains('vp9')) {
-                prioritizedCodecs.add(c);
-                break; // Just take the first VP9 profile
-              }
-            }
-            
-            // 2. Find H264 (Compatible with Rust/iOS)
-            for (var c in codecs) {
-              if (c.mimeType.toLowerCase().contains('h264')) {
-                // Note: older versions of flutter_webrtc might not expose parameters/sdpFmtpLine easily
-                // or use different property names. We include all H264 profiles here.
-                // Since VP9 is prioritized above, this acts as a fallback.
-                prioritizedCodecs.add(c);
-              }
-            }
-            
-            // 3. Add everything else
-            for (var c in codecs) {
-              if (!prioritizedCodecs.contains(c)) {
-                otherCodecs.add(c);
-              }
-            }
-
-            final finalCodecs = [...prioritizedCodecs, ...otherCodecs];
-            if (finalCodecs.isNotEmpty) {
-              await transceiver.setCodecPreferences(finalCodecs);
-            }
-          } catch (e) {
-            hlog('Failed to set codec preferences: $e', source: 'WebRTC');
-          }
-        }
-      }
+      await _applyEncodingParams(sender);
+      await _applyCodecPreferences();
 
       hlog('Screen capture started, track added to peer connection', source: 'WebRTC');
       return true;
-    } catch (e) {
+    } catch (e, stackTrace) {
       hlog('Failed to start screen capture: $e', source: 'WebRTC');
+      hlog('Stack trace: $stackTrace', source: 'WebRTC');
+
+      // Additional context for Linux debugging
+      if (Platform.isLinux) {
+        final sessionType = Platform.environment['XDG_SESSION_TYPE'] ?? 'unknown';
+        hlog('Capture failed on Linux $sessionType session', source: 'WebRTC');
+        hlog('Known issue: flutter_webrtc may not support PipeWire/Wayland - see issue #1542', source: 'WebRTC');
+      }
+
       return false;
     } finally {
       _isCapturingScreen = false;
@@ -368,6 +337,49 @@ class WebRTCService {
   }
 
   // MARK: - Private Methods
+
+  Future<void> _applyEncodingParams(RTCRtpSender sender) async {
+    try {
+      final parameters = sender.parameters;
+      if (parameters.encodings != null && parameters.encodings!.isNotEmpty) {
+        final scaleFactor = DeviceStorage.shared.getStreamQuality();
+        parameters.encodings![0].maxBitrate = 8000000;
+        parameters.encodings![0].scaleResolutionDownBy = scaleFactor;
+        await sender.setParameters(parameters);
+        hlog('Encoding: scaleResolutionDownBy=$scaleFactor', source: 'WebRTC');
+      }
+    } catch (e) {
+      hlog('Failed to set encoding parameters: $e', source: 'WebRTC');
+    }
+  }
+
+  Future<void> _applyCodecPreferences() async {
+    final transceivers = await _peerConnection!.getTransceivers();
+    for (final transceiver in transceivers) {
+      if (transceiver.sender.track?.kind == 'video') {
+        try {
+          final capabilities = await getRtpSenderCapabilities('video');
+          final codecs = capabilities.codecs ?? [];
+          final List<RTCRtpCodecCapability> ordered = [];
+          for (var c in codecs) {
+            if (c.mimeType.toLowerCase().contains('vp9')) {
+              ordered.add(c);
+              break;
+            }
+          }
+          for (var c in codecs) {
+            if (c.mimeType.toLowerCase().contains('h264')) ordered.add(c);
+          }
+          for (var c in codecs) {
+            if (!ordered.contains(c)) ordered.add(c);
+          }
+          if (ordered.isNotEmpty) await transceiver.setCodecPreferences(ordered);
+        } catch (e) {
+          hlog('Failed to set codec preferences: $e', source: 'WebRTC');
+        }
+      }
+    }
+  }
 
   Future<void> _initializeDataChannel() async {
     if (_peerConnection == null) return;

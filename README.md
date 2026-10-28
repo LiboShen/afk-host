@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>Remote desktop host for <a href="https://afkdev.app">AFK</a></strong><br>
-  Stream your Mac or Windows screen to your phone and control it with touch and voice.
+  Stream your Mac, Windows, or Linux screen to your phone and control it with touch and voice.
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@ This repo contains the **host application** that runs on your computer and strea
 |----------|--------|
 | macOS | ✅ Stable |
 | Windows | 🚧 In development |
-| Linux | 💭 Planned |
+| Linux (Wayland) | 🧪 Work in progress — KDE Plasma 6 works; GNOME has a video freeze. See [docs/LINUX.md](docs/LINUX.md) |
 
 ## Quick Start
 
@@ -70,10 +70,12 @@ flutter pub get
 # Run
 flutter run -d macos    # macOS
 flutter run -d windows  # Windows (rough edges)
+flutter run -d linux    # Linux (Wayland, experimental)
 
 # Build release
 flutter build macos
 flutter build windows
+flutter build linux
 ```
 
 ## License
